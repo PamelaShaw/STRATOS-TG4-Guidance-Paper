@@ -1,0 +1,132 @@
+---
+title: "Bayes example for guidance paper"
+author: "Paul Gustafson"
+date: "September 11, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data wrangling
+
+
+```{r, cache=T}
+require(xlsx)
+dtf <- read.xlsx("open_data_20180607.xlsx", 1)
+
+require(tidyverse)
+dtf <- dplyr::mutate(dtf, xstr=log(POTASS_FFQ1/ENERGY_FFQ1),
+                          r1=log(POTASS_UR1/TEE1),
+                          r2=log(POTASS_UR2/TEE2))
+
+### look at naive regression
+summary(lm(BMI ~ xstr + AGE + GENDER, data=dtf))
+```
+
+## Bayesian model specification
+
+```{r, cache=T}
+genmod.string <- "model{
+
+gm.0 ~ dnorm(0,.001)
+gm.age ~ dnorm(0,.001)
+gm.gnd ~ dnorm(0,.001)
+prc.x ~ dgamma(.01,.01)
+
+bt.0 ~ dnorm(0,.001)
+bt.x ~ dnorm(0,.001)
+bt.age ~ dnorm(0,.001)
+bt.gnd ~ dnorm(0,.001)
+prc.y ~ dgamma(.01,.01)
+
+al.0 ~ dnorm(0,.001)
+al.x ~ dnorm(0,.001)
+al.age ~ dnorm(0,.001)
+al.gnd ~ dnorm(0,.001)
+prc.xstr ~ dgamma(.01,.01)
+
+prc.r1 ~ dgamma(.01,.01)
+prc.r2 ~ dgamma(.01,.01)
+
+for (i in 1:n) {
+  x[i] ~ dnorm(gm.0 + gm.age*age[i] + gm.gnd*gnd[i], prc.x)
+  y[i] ~ dnorm(bt.0 + bt.x*x[i] + bt.age*age[i] + bt.gnd*gnd[i], prc.y)
+  xstr[i] ~ dnorm(al.0 + al.x*x[i] + al.age*age[i] + al.gnd*gnd[i], prc.xstr)
+}
+
+for (i in 1:n.sub) {
+  r1[i] ~ dnorm(x[i], prc.r1)
+  r2[i] ~ dnorm(x[i], prc.r2)
+}
+
+}"
+
+require(rjags)
+
+mod <- jags.model(
+  textConnection(genmod.string),
+  data=list(y=dtf$BMI, xstr=dtf$xstr, r1=dtf$r1, r2=dtf$r2, 
+            age=dtf$AGE, gnd=dtf$GENDER, n=dim(dtf)[1], n.sub=250),
+  n.chains=3)
+```
+
+## Produce MCMC output
+
+```{r,  cache=T}
+set.seed(13)  ### want beta.hat insensitive to seed, to plus/minus .01 say
+
+update(mod, 5000) #burn-in
+
+opt.jags <- coda.samples(mod, n.iter=500000, thin=50,
+                         variable.names=c("bt.x", "al.0", "al.x", "al.age", "al.gnd","prc.y", "prc.x", "prc.xstr", "prc.r1", "prc.r2"))
+```
+
+## Check traceplots
+```{r}
+require(rjags)
+par(mfrow=c(1,2))
+traceplot(opt.jags[,c("bt.x","prc.y")])
+
+par(mfrow=c(2,2))
+traceplot(opt.jags[,c("al.0","al.x","al.age","al.gnd")])
+
+par(mfrow=c(2,2))
+traceplot(opt.jags[,c("prc.r1","prc.r2","prc.x","prc.xstr")])
+```
+
+## Inference summaries in general
+```{r}
+summary(opt.jags)
+```
+
+## Inference summaries for $beta_x$
+
+```{r}
+### focus on beta.x
+tmp <- as.matrix(opt.jags[,"bt.x"])
+
+### point estimate - posterior mean
+round(mean(tmp),2)
+
+### analog to SE, the posterior SD
+round(sqrt(var(tmp)),2)
+
+### 95% equal-tailed posterior credible interval
+round(quantile(tmp, c(.025, .975)),2)
+
+### how much posterior probability above zero?
+mean(tmp>0)
+```
+
+BAYESIAN RESULTS ON COVARIATES
+
+
+##                  pst mn  pst SD       2.5%       97.5%   pst prb > 0 
+## beta.x          -6.08     1.43        -9.38        -3.78     0.00 
+## beta.gnd        -0.30     0.51        -1.30         0.71     0.27 
+## beta.age         0.08     0.03         0.02         0.15     1.00
+
+
+
